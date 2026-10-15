@@ -3,6 +3,7 @@ package prober
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -311,6 +313,13 @@ func probeEndpointDetailed(ctx context.Context, localPort int, targetURL string)
 		return totalDur, phases, statusCode, fmt.Errorf("unexpected HTTP status: %d", statusCode)
 	}
 
+	if phases.DNSDurationSec == 0 {
+		if parsedU, err := url.Parse(targetURL); err == nil && parsedU.Hostname() != "" {
+			if dnsDur, err := measureDNSResolution(localPort, parsedU.Hostname(), 2*time.Second); err == nil && dnsDur > 0 {
+				phases.DNSDurationSec = dnsDur.Seconds()
+			}
+		}
+	}
 	return totalDur, phases, statusCode, nil
 }
 
@@ -347,4 +356,113 @@ func probeEndpointSpeed(ctx context.Context, localPort int, targetURL string) (i
 	}
 
 	return bytesRead, duration, nil
+}
+
+// measureDNSResolution measures real DNS lookup latency via SOCKS5 proxy using DNS-over-TCP to 1.1.1.1
+func measureDNSResolution(proxyPort int, host string, timeout time.Duration) (time.Duration, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return 0, nil
+	}
+	start := time.Now()
+	conn, err := socks5Dial(fmt.Sprintf("127.0.0.1:%d", proxyPort), "1.1.1.1:53", timeout)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	query := makeDNSQuery(host)
+	prefix := make([]byte, 2)
+	binary.BigEndian.PutUint16(prefix, uint16(len(query)))
+
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := conn.Write(prefix); err != nil {
+		return 0, err
+	}
+	if _, err := conn.Write(query); err != nil {
+		return 0, err
+	}
+
+	if _, err := io.ReadFull(conn, prefix); err != nil {
+		return 0, err
+	}
+	respLen := binary.BigEndian.Uint16(prefix)
+	respBuf := make([]byte, respLen)
+	if _, err := io.ReadFull(conn, respBuf); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
+}
+
+func socks5Dial(proxyAddr, dstAddr string, timeout time.Duration) (net.Conn, error) {
+	conn, err := net.DialTimeout("tcp", proxyAddr, timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	// 1. Handshake
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(conn, buf); err != nil || buf[0] != 0x05 || buf[1] != 0x00 {
+		conn.Close()
+		return nil, fmt.Errorf("socks5 handshake failed")
+	}
+
+	// 2. Connect
+	host, portStr, err := net.SplitHostPort(dstAddr)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	port := 53
+	fmt.Sscanf(portStr, "%d", &port)
+
+	ip := net.ParseIP(host)
+	req := []byte{0x05, 0x01, 0x00}
+	if ip4 := ip.To4(); ip4 != nil {
+		req = append(req, 0x01)
+		req = append(req, ip4...)
+	} else {
+		req = append(req, 0x03, byte(len(host)))
+		req = append(req, []byte(host)...)
+	}
+	req = append(req, byte(port>>8), byte(port&0xFF))
+
+	if _, err := conn.Write(req); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	resp := make([]byte, 4)
+	if _, err := io.ReadFull(conn, resp); err != nil || resp[1] != 0x00 {
+		conn.Close()
+		return nil, fmt.Errorf("socks5 connect failed")
+	}
+	switch resp[3] {
+	case 0x01:
+		io.CopyN(io.Discard, conn, 4+2)
+	case 0x03:
+		var l [1]byte
+		conn.Read(l[:])
+		io.CopyN(io.Discard, conn, int64(l[0])+2)
+	case 0x04:
+		io.CopyN(io.Discard, conn, 16+2)
+	}
+	return conn, nil
+}
+
+func makeDNSQuery(domain string) []byte {
+	var q []byte
+	q = append(q, 0x12, 0x34)
+	q = append(q, 0x01, 0x00)
+	q = append(q, 0x00, 0x01)
+	q = append(q, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+	for _, p := range strings.Split(domain, ".") {
+		q = append(q, byte(len(p)))
+		q = append(q, []byte(p)...)
+	}
+	q = append(q, 0x00, 0x00, 0x01, 0x00, 0x01)
+	return q
 }
