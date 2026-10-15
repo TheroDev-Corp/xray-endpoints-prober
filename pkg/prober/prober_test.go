@@ -170,12 +170,18 @@ func TestProbeLatencyAndSpeed(t *testing.T) {
 	defer cancel()
 
 	pingURL := fmt.Sprintf("http://127.0.0.1:%d/ping", ts.Listener.Addr().(*net.TCPAddr).Port)
-	latency, err := probeEndpointLatency(ctx, socksPort, pingURL)
+	totalDur, phases, status, err := probeEndpointDetailed(ctx, socksPort, pingURL)
 	if err != nil {
-		t.Fatalf("probeEndpointLatency failed: %v", err)
+		t.Fatalf("probeEndpointDetailed failed: %v", err)
 	}
-	if latency <= 0 {
-		t.Errorf("expected positive latency, got %v", latency)
+	if totalDur <= 0 {
+		t.Errorf("expected positive totalDur, got %v", totalDur)
+	}
+	if status != http.StatusOK {
+		t.Errorf("expected status 200, got %d", status)
+	}
+	if phases.TTFBDurationSec <= 0 {
+		t.Errorf("expected positive TTFBDurationSec, got %v", phases.TTFBDurationSec)
 	}
 
 	speedURL := fmt.Sprintf("http://127.0.0.1:%d/speed", ts.Listener.Addr().(*net.TCPAddr).Port)

@@ -2,11 +2,17 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+type TargetConfig struct {
+	Tag string // "cloudflare", "gstatic", "google", etc.
+	URL string
+}
 
 type Config struct {
 	Region                   string
@@ -16,18 +22,40 @@ type Config struct {
 	SubscriptionPollInterval time.Duration
 	SubscriptionCacheFile    string
 	ProtocolsExclude         []string
-	ProbePingURL             string
-	ProbePingInterval        time.Duration
-	ProbePingTimeout         time.Duration
-	ProbeSpeedtestURL        string
-	ProbeSpeedtestInterval   time.Duration
-	ProbeSpeedtestTimeout    time.Duration
-	ProbeConcurrency         int
-	ListenAddr               string
-	InboundBasePort          int
+
+	// Targets for probing latency / availability
+	ProbeTargets           []TargetConfig
+	ProbePingInterval      time.Duration
+	ProbePingTimeout       time.Duration
+
+	// Speedtest settings
+	ProbeSpeedtestURL      string
+	ProbeSpeedtestInterval time.Duration
+	ProbeSpeedtestTimeout  time.Duration
+
+	ProbeConcurrency int
+	ListenAddr       string
+	InboundBasePort  int
 }
 
 func Load() (*Config, error) {
+	defaultTargets := "https://cp.cloudflare.com/generate_204,https://www.gstatic.com/generate_204,https://www.google.com/generate_204"
+
+	// Backward compatibility: check PROBE_TARGET_URLS first, fallback to PROBE_PING_URL
+	rawTargets := getEnv("PROBE_TARGET_URLS", "")
+	if rawTargets == "" {
+		if pingURL := getEnv("PROBE_PING_URL", ""); pingURL != "" {
+			rawTargets = pingURL
+		} else {
+			rawTargets = defaultTargets
+		}
+	}
+
+	targets := parseTargetURLs(rawTargets)
+	if len(targets) == 0 {
+		targets = parseTargetURLs(defaultTargets)
+	}
+
 	cfg := &Config{
 		Region:                   getEnv("REGION", "default"),
 		XrayVersion:              getEnv("XRAY_VERSION", "v24.11.30"),
@@ -36,7 +64,7 @@ func Load() (*Config, error) {
 		SubscriptionPollInterval: getEnvDuration("SUBSCRIPTION_POLL_INTERVAL", 10*time.Minute),
 		SubscriptionCacheFile:    getEnv("SUBSCRIPTION_CACHE_FILE", "/tmp/subscription.cache"),
 		ProtocolsExclude:         parseCommaList(getEnv("PROTOCOLS_EXCLUDE", "")),
-		ProbePingURL:             getEnv("PROBE_PING_URL", "https://cp.cloudflare.com/generate_204"),
+		ProbeTargets:             targets,
 		ProbePingInterval:        getEnvDuration("PROBE_PING_INTERVAL", 30*time.Second),
 		ProbePingTimeout:         getEnvDuration("PROBE_PING_TIMEOUT", 5*time.Second),
 		ProbeSpeedtestURL:        getEnv("PROBE_SPEEDTEST_URL", "https://speed.cloudflare.com/__down?bytes=10000000"),
@@ -61,6 +89,54 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parseTargetURLs(s string) []TargetConfig {
+	parts := strings.Split(s, ",")
+	var res []TargetConfig
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed == "" {
+			continue
+		}
+		tag := extractTag(trimmed)
+		res = append(res, TargetConfig{
+			Tag: tag,
+			URL: trimmed,
+		})
+	}
+	return res
+}
+
+func extractTag(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "target"
+	}
+	host := strings.ToLower(u.Hostname())
+	// Strip common prefixes
+	host = strings.TrimPrefix(host, "www.")
+	host = strings.TrimPrefix(host, "cp.")
+	// Map well known domains to clean tags
+	if strings.Contains(host, "cloudflare") {
+		return "cloudflare"
+	}
+	if strings.Contains(host, "gstatic") {
+		return "gstatic"
+	}
+	if strings.Contains(host, "google") {
+		return "google"
+	}
+	if strings.Contains(host, "rutube") {
+		return "rutube"
+	}
+	if strings.Contains(host, "vk") {
+		return "vk"
+	}
+	if strings.Contains(host, "yandex") {
+		return "yandex"
+	}
+	return host
 }
 
 func getEnv(key, defaultVal string) string {

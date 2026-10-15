@@ -25,6 +25,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ListenAddr != ":8080" {
 		t.Errorf("expected ListenAddr :8080, got %s", cfg.ListenAddr)
 	}
+	if len(cfg.ProbeTargets) != 3 {
+		t.Errorf("expected 3 default targets, got %d", len(cfg.ProbeTargets))
+	}
+	if cfg.ProbeTargets[0].Tag != "cloudflare" || cfg.ProbeTargets[1].Tag != "gstatic" || cfg.ProbeTargets[2].Tag != "google" {
+		t.Errorf("unexpected target tags: %+v", cfg.ProbeTargets)
+	}
 }
 
 func TestLoadCustomEnv(t *testing.T) {
@@ -36,7 +42,7 @@ func TestLoadCustomEnv(t *testing.T) {
 	os.Setenv("SUBSCRIPTION_POLL_INTERVAL", "5m")
 	os.Setenv("SUBSCRIPTION_CACHE_FILE", "/var/cache/sub.txt")
 	os.Setenv("PROTOCOLS_EXCLUDE", "vmess, ss ")
-	os.Setenv("PROBE_PING_URL", "https://1.1.1.1")
+	os.Setenv("PROBE_TARGET_URLS", "https://1.1.1.1,https://google.com")
 	os.Setenv("PROBE_PING_INTERVAL", "15s")
 	os.Setenv("PROBE_PING_TIMEOUT", "2s")
 	os.Setenv("PROBE_SPEEDTEST_URL", "https://speed.cloudflare.com/__down?bytes=1000000")
@@ -68,6 +74,12 @@ func TestLoadCustomEnv(t *testing.T) {
 	}
 	if len(cfg.ProtocolsExclude) != 2 || cfg.ProtocolsExclude[0] != "vmess" || cfg.ProtocolsExclude[1] != "ss" {
 		t.Errorf("expected [vmess, ss], got %v", cfg.ProtocolsExclude)
+	}
+	if len(cfg.ProbeTargets) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(cfg.ProbeTargets))
+	}
+	if cfg.ProbeTargets[1].Tag != "google" {
+		t.Errorf("expected target tag google, got %s", cfg.ProbeTargets[1].Tag)
 	}
 	if cfg.ProbePingInterval != 15*time.Second {
 		t.Errorf("expected 15s, got %v", cfg.ProbePingInterval)

@@ -2,11 +2,13 @@ package prober
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -57,7 +59,7 @@ func (p *Prober) GetEndpoints() []subscription.Endpoint {
 	return res
 }
 
-// StartLatencyLoop starts the latency probe ticker
+// StartLatencyLoop starts the latency probe ticker across all configured targets
 func (p *Prober) StartLatencyLoop(ctx context.Context) {
 	ticker := time.NewTicker(p.cfg.ProbePingInterval)
 	defer ticker.Stop()
@@ -109,6 +111,11 @@ func (p *Prober) runLatencyProbes(ctx context.Context) {
 		return
 	}
 
+	targets := p.cfg.ProbeTargets
+	if len(targets) == 0 {
+		return
+	}
+
 	concurrency := p.cfg.ProbeConcurrency
 	if concurrency <= 0 {
 		concurrency = 5
@@ -125,36 +132,38 @@ func (p *Prober) runLatencyProbes(ctx context.Context) {
 			continue
 		}
 
-		select {
-		case <-ctx.Done():
-			return
-		case sem <- struct{}{}:
-		}
-
-		wg.Add(1)
-		go func(endpoint subscription.Endpoint) {
-			defer func() {
-				<-sem
-				wg.Done()
-			}()
-
-			probeCtx, cancel := context.WithTimeout(ctx, p.cfg.ProbePingTimeout)
-			defer cancel()
-
-			latency, err := probeEndpointLatency(probeCtx, endpoint.LocalPort, p.cfg.ProbePingURL)
-			if err != nil {
-				p.metrics.RecordLatency(endpoint.ID, false, 0, err)
-				atomic.AddInt64(&failCount, 1)
-			} else {
-				p.metrics.RecordLatency(endpoint.ID, true, latency, nil)
-				atomic.AddInt64(&successCount, 1)
+		for _, tgt := range targets {
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
 			}
-		}(ep)
+
+			wg.Add(1)
+			go func(endpoint subscription.Endpoint, target config.TargetConfig) {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+
+				probeCtx, cancel := context.WithTimeout(ctx, p.cfg.ProbePingTimeout)
+				defer cancel()
+
+				totalDur, phases, statusCode, err := probeEndpointDetailed(probeCtx, endpoint.LocalPort, target.URL)
+				if err != nil {
+					p.metrics.RecordTargetLatency(endpoint.ID, target.Tag, false, statusCode, 0, metrics.PhaseMetrics{}, err)
+					atomic.AddInt64(&failCount, 1)
+				} else {
+					p.metrics.RecordTargetLatency(endpoint.ID, target.Tag, true, statusCode, totalDur, phases, nil)
+					atomic.AddInt64(&successCount, 1)
+				}
+			}(ep, tgt)
+		}
 	}
 
 	wg.Wait()
-	log.Printf("[prober:ping] cycle complete for %d endpoints in %s (UP: %d, DOWN: %d)",
-		len(endpoints), time.Since(cycleStart).Round(time.Millisecond), successCount, failCount)
+	log.Printf("[prober:ping] cycle complete for %d endpoints x %d targets in %s (UP: %d, DOWN: %d)",
+		len(endpoints), len(targets), time.Since(cycleStart).Round(time.Millisecond), successCount, failCount)
 }
 
 func (p *Prober) runSpeedtestProbes(ctx context.Context) {
@@ -222,7 +231,8 @@ func createSocksClient(localPort int, timeout time.Duration) *http.Client {
 	}
 }
 
-func probeEndpointLatency(ctx context.Context, localPort int, targetURL string) (time.Duration, error) {
+// probeEndpointDetailed measures TTFB, total latency and connection phases with httptrace
+func probeEndpointDetailed(ctx context.Context, localPort int, targetURL string) (time.Duration, metrics.PhaseMetrics, int, error) {
 	client := createSocksClient(localPort, 10*time.Second)
 	defer func() {
 		if transport, ok := client.Transport.(*http.Transport); ok {
@@ -230,30 +240,78 @@ func probeEndpointLatency(ctx context.Context, localPort int, targetURL string) 
 		}
 	}()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	var (
+		dnsStart, dnsDone   time.Time
+		connStart, connDone time.Time
+		tlsStart, tlsDone   time.Time
+		gotFirstByte        time.Time
+		phases              metrics.PhaseMetrics
+	)
+
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) {
+			dnsStart = time.Now()
+		},
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			dnsDone = time.Now()
+			if !dnsStart.IsZero() {
+				phases.DNSDurationSec = dnsDone.Sub(dnsStart).Seconds()
+			}
+		},
+		ConnectStart: func(network, addr string) {
+			connStart = time.Now()
+		},
+		ConnectDone: func(network, addr string, err error) {
+			connDone = time.Now()
+			if !connStart.IsZero() {
+				phases.TCPDurationSec = connDone.Sub(connStart).Seconds()
+			}
+		},
+		TLSHandshakeStart: func() {
+			tlsStart = time.Now()
+		},
+		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
+			tlsDone = time.Now()
+			if !tlsStart.IsZero() {
+				phases.TLSDurationSec = tlsDone.Sub(tlsStart).Seconds()
+			}
+		},
+		GotFirstResponseByte: func() {
+			gotFirstByte = time.Now()
+		},
+	}
+
+	reqCtx := httptrace.WithClientTrace(ctx, trace)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		return 0, err
+		return 0, phases, 0, err
 	}
 	req.Header.Set("User-Agent", "xray-endpoints-prober/1.0")
 
 	start := time.Now()
 	resp, err := client.Do(req)
+	totalDur := time.Since(start)
 	if err != nil {
-		return 0, err
+		return totalDur, phases, 0, err
 	}
 	defer resp.Body.Close()
 
-	// Measure TTFB (time when headers are received)
-	latency := time.Since(start)
+	if !gotFirstByte.IsZero() {
+		phases.TTFBDurationSec = gotFirstByte.Sub(start).Seconds()
+	} else {
+		phases.TTFBDurationSec = totalDur.Seconds()
+	}
+	phases.TotalDurationSec = totalDur.Seconds()
 
-	// Read small portion or drain
+	// Drain a small portion of body
 	_, _ = io.CopyN(io.Discard, resp.Body, 1024)
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return latency, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	statusCode := resp.StatusCode
+	if statusCode < 200 || statusCode >= 400 {
+		return totalDur, phases, statusCode, fmt.Errorf("unexpected HTTP status: %d", statusCode)
 	}
 
-	return latency, nil
+	return totalDur, phases, statusCode, nil
 }
 
 func probeEndpointSpeed(ctx context.Context, localPort int, targetURL string) (int64, time.Duration, error) {
