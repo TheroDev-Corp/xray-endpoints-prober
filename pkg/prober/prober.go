@@ -224,6 +224,11 @@ func createSocksClient(localPort int, timeout time.Duration) *http.Client {
 
 func probeEndpointLatency(ctx context.Context, localPort int, targetURL string) (time.Duration, error) {
 	client := createSocksClient(localPort, 10*time.Second)
+	defer func() {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
@@ -253,6 +258,11 @@ func probeEndpointLatency(ctx context.Context, localPort int, targetURL string) 
 
 func probeEndpointSpeed(ctx context.Context, localPort int, targetURL string) (int64, time.Duration, error) {
 	client := createSocksClient(localPort, 30*time.Second)
+	defer func() {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
