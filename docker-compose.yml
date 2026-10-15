@@ -7,20 +7,9 @@ services:
     container_name: xray-endpoints-prober
     restart: unless-stopped
     network_mode: host
-    environment:
-      - REGION=eu-central-1
-      - XRAY_VERSION=v26.3.27
-      - SUBSCRIPTION_URL=https://example.com/sub
-      - SUBSCRIPTION_POLL_INTERVAL=10m
-      - PROTOCOLS_EXCLUDE=hysteria2,shadowsocks
-      - PROBE_TARGET_URLS=https://cp.cloudflare.com/generate_204,https://www.gstatic.com/generate_204,https://www.google.com/generate_204
-      - PROBE_PING_INTERVAL=15s
-      - PROBE_PING_TIMEOUT=5s
-      - PROBE_SPEEDTEST_URL=https://speed.cloudflare.com/__down?bytes=10000000
-      - PROBE_SPEEDTEST_INTERVAL=10m
-      - PROBE_SPEEDTEST_TIMEOUT=15s
-      - PROBE_CONCURRENCY=5
-      - LISTEN_ADDR=:8080
+    env_file:
+      - .env
+
     volumes:
       - xray-cache:/var/cache/xray
       - prober-cache:/var/cache/xray-prober
