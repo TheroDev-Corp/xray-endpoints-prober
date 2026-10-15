@@ -1,0 +1,112 @@
+# Default values for xray-endpoints-prober.
+
+image:
+  repository: xray-endpoints-prober
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  readOnlyRootFilesystem: true
+  runAsNonRoot: false
+  capabilities:
+    drop:
+      - ALL
+
+# Prober Configuration
+config:
+  region: "default"
+  xrayVersion: "v26.3.27"
+  subscriptionUrl: ""
+  subscriptionPollInterval: "10m"
+  protocolsExclude: "hysteria2,shadowsocks"
+  
+  # Multi-target probe settings
+  probeTargetUrls: "https://cp.cloudflare.com/generate_204,https://www.google.com/generate_204,https://www.gstatic.com/generate_204"
+  probePingInterval: "15s"
+  probePingTimeout: "5s"
+  
+  # Speedtest settings
+  probeSpeedtestUrl: "https://speed.cloudflare.com/__down?bytes=10000000"
+  probeSpeedtestInterval: "10m"
+  probeSpeedtestTimeout: "15s"
+  
+  probeConcurrency: 5
+  listenAddr: ":8080"
+  inboundBasePort: 10800
+
+# Existing secret with subscription URL (optional)
+# secretRef:
+#   name: my-xray-secrets
+#   key: subscription-url
+
+service:
+  type: ClusterIP
+  port: 8080
+  name: http-metrics
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  scrapeTimeout: 10s
+  labels:
+    release: prometheus
+  metricRelabelings: []
+  relabelings: []
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http-metrics
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http-metrics
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+persistence:
+  cache:
+    enabled: true
+    # Use emptyDir by default for high performance and ephemeral pod lifecycle
+    emptyDir:
+      medium: ""
+      sizeLimit: 1Gi
+    # Or use a PersistentVolumeClaim
+    # storageClass: "standard"
+    # size: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

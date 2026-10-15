@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "xray-endpoints-prober.fullname" . }}
+  labels:
+    {{- include "xray-endpoints-prober.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "xray-endpoints-prober.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "xray-endpoints-prober.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "xray-endpoints-prober.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: REGION
+              value: {{ .Values.config.region | quote }}
+            - name: XRAY_VERSION
+              value: {{ .Values.config.xrayVersion | quote }}
+            - name: XRAY_CACHE_DIR
+              value: "/var/cache/xray"
+            - name: SUBSCRIPTION_CACHE_FILE
+              value: "/var/cache/xray-prober/subscription.cache"
+            - name: SUBSCRIPTION_POLL_INTERVAL
+              value: {{ .Values.config.subscriptionPollInterval | quote }}
+            - name: PROTOCOLS_EXCLUDE
+              value: {{ .Values.config.protocolsExclude | quote }}
+            - name: PROBE_TARGET_URLS
+              value: {{ .Values.config.probeTargetUrls | quote }}
+            - name: PROBE_PING_INTERVAL
+              value: {{ .Values.config.probePingInterval | quote }}
+            - name: PROBE_PING_TIMEOUT
+              value: {{ .Values.config.probePingTimeout | quote }}
+            - name: PROBE_SPEEDTEST_URL
+              value: {{ .Values.config.probeSpeedtestUrl | quote }}
+            - name: PROBE_SPEEDTEST_INTERVAL
+              value: {{ .Values.config.probeSpeedtestInterval | quote }}
+            - name: PROBE_SPEEDTEST_TIMEOUT
+              value: {{ .Values.config.probeSpeedtestTimeout | quote }}
+            - name: PROBE_CONCURRENCY
+              value: {{ .Values.config.probeConcurrency | quote }}
+            - name: LISTEN_ADDR
+              value: {{ .Values.config.listenAddr | quote }}
+            - name: INBOUND_BASE_PORT
+              value: {{ .Values.config.inboundBasePort | quote }}
+            {{- if .Values.config.subscriptionUrl }}
+            - name: SUBSCRIPTION_URL
+              value: {{ .Values.config.subscriptionUrl | quote }}
+            {{- else if .Values.secretRef }}
+            - name: SUBSCRIPTION_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretRef.name }}
+                  key: {{ .Values.secretRef.key }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: cache-xray
+              mountPath: /var/cache/xray
+            - name: cache-prober
+              mountPath: /var/cache/xray-prober
+            - name: tmp-dir
+              mountPath: /tmp
+      volumes:
+        - name: tmp-dir
+          emptyDir: {}
+        - name: cache-xray
+          emptyDir: {}
+        - name: cache-prober
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

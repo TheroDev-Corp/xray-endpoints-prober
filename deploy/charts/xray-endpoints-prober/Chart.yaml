@@ -1,0 +1,16 @@
+apiVersion: v2
+name: xray-endpoints-prober
+description: Cloud-native Prometheus prober for Xray endpoints across multiple regions
+type: application
+version: 0.1.0
+appVersion: "v26.3.27"
+keywords:
+  - xray
+  - vless
+  - trojan
+  - prometheus
+  - prober
+  - monitoring
+home: https://github.com/TheroDev-Corp/xray-endpoints-prober
+maintainers:
+  - name: TheroDev
