@@ -151,7 +151,7 @@ func (p *Prober) runLatencyProbes(ctx context.Context) {
 				probeCtx, cancel := context.WithTimeout(ctx, p.cfg.ProbePingTimeout)
 				defer cancel()
 
-				totalDur, phases, statusCode, err := probeEndpointDetailed(probeCtx, endpoint.LocalPort, target.URL)
+				totalDur, phases, statusCode, err := probeEndpointDetailed(probeCtx, endpoint.LocalPort, target.URL, p.cfg.ProbeDNSServers)
 				if err != nil {
 					p.metrics.RecordTargetLatency(endpoint.ID, target.Tag, false, statusCode, 0, metrics.PhaseMetrics{}, err)
 					atomic.AddInt64(&failCount, 1)
@@ -234,7 +234,7 @@ func createSocksClient(localPort int, timeout time.Duration) *http.Client {
 }
 
 // probeEndpointDetailed measures TTFB, total latency and connection phases with httptrace
-func probeEndpointDetailed(ctx context.Context, localPort int, targetURL string) (time.Duration, metrics.PhaseMetrics, int, error) {
+func probeEndpointDetailed(ctx context.Context, localPort int, targetURL string, dnsServers []string) (time.Duration, metrics.PhaseMetrics, int, error) {
 	client := createSocksClient(localPort, 10*time.Second)
 	defer func() {
 		if transport, ok := client.Transport.(*http.Transport); ok {
@@ -315,7 +315,7 @@ func probeEndpointDetailed(ctx context.Context, localPort int, targetURL string)
 
 	if phases.DNSDurationSec == 0 {
 		if parsedU, err := url.Parse(targetURL); err == nil && parsedU.Hostname() != "" {
-			if dnsDur, err := measureDNSResolution(localPort, parsedU.Hostname(), 2*time.Second); err == nil && dnsDur > 0 {
+			if dnsDur, err := measureDNSResolution(localPort, parsedU.Hostname(), dnsServers, 2*time.Second); err == nil && dnsDur > 0 {
 				phases.DNSDurationSec = dnsDur.Seconds()
 			}
 		}
@@ -358,39 +358,55 @@ func probeEndpointSpeed(ctx context.Context, localPort int, targetURL string) (i
 	return bytesRead, duration, nil
 }
 
-// measureDNSResolution measures real DNS lookup latency via SOCKS5 proxy using DNS-over-TCP to 1.1.1.1
-func measureDNSResolution(proxyPort int, host string, timeout time.Duration) (time.Duration, error) {
+// measureDNSResolution measures real DNS lookup latency via SOCKS5 proxy using DNS-over-TCP to configured DNS servers
+func measureDNSResolution(proxyPort int, host string, dnsServers []string, timeout time.Duration) (time.Duration, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		return 0, nil
 	}
-	start := time.Now()
-	conn, err := socks5Dial(fmt.Sprintf("127.0.0.1:%d", proxyPort), "1.1.1.1:53", timeout)
-	if err != nil {
-		return 0, err
+	if len(dnsServers) == 0 {
+		dnsServers = []string{"1.1.1.1:53", "8.8.8.8:53"}
 	}
-	defer conn.Close()
+	var lastErr error
+	for _, dnsServer := range dnsServers {
+		start := time.Now()
+		conn, err := socks5Dial(fmt.Sprintf("127.0.0.1:%d", proxyPort), dnsServer, timeout)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-	query := makeDNSQuery(host)
-	prefix := make([]byte, 2)
-	binary.BigEndian.PutUint16(prefix, uint16(len(query)))
+		query := makeDNSQuery(host)
+		prefix := make([]byte, 2)
+		binary.BigEndian.PutUint16(prefix, uint16(len(query)))
 
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	if _, err := conn.Write(prefix); err != nil {
-		return 0, err
-	}
-	if _, err := conn.Write(query); err != nil {
-		return 0, err
-	}
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+		if _, err := conn.Write(prefix); err != nil {
+			conn.Close()
+			lastErr = err
+			continue
+		}
+		if _, err := conn.Write(query); err != nil {
+			conn.Close()
+			lastErr = err
+			continue
+		}
 
-	if _, err := io.ReadFull(conn, prefix); err != nil {
-		return 0, err
+		if _, err := io.ReadFull(conn, prefix); err != nil {
+			conn.Close()
+			lastErr = err
+			continue
+		}
+		respLen := binary.BigEndian.Uint16(prefix)
+		respBuf := make([]byte, respLen)
+		if _, err := io.ReadFull(conn, respBuf); err != nil {
+			conn.Close()
+			lastErr = err
+			continue
+		}
+		conn.Close()
+		return time.Since(start), nil
 	}
-	respLen := binary.BigEndian.Uint16(prefix)
-	respBuf := make([]byte, respLen)
-	if _, err := io.ReadFull(conn, respBuf); err != nil {
-		return 0, err
-	}
-	return time.Since(start), nil
+	return 0, lastErr
 }
 
 func socks5Dial(proxyAddr, dstAddr string, timeout time.Duration) (net.Conn, error) {

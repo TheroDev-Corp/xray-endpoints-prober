@@ -27,6 +27,7 @@ type Config struct {
 	ProbeTargets           []TargetConfig
 	ProbePingInterval      time.Duration
 	ProbePingTimeout       time.Duration
+	ProbeDNSServers        []string
 
 	// Speedtest settings
 	ProbeSpeedtestURL      string
@@ -67,6 +68,7 @@ func Load() (*Config, error) {
 		ProbeTargets:             targets,
 		ProbePingInterval:        getEnvDuration("PROBE_PING_INTERVAL", 30*time.Second),
 		ProbePingTimeout:         getEnvDuration("PROBE_PING_TIMEOUT", 5*time.Second),
+		ProbeDNSServers:          parseDNSServers(getEnv("PROBE_DNS_SERVERS", "1.1.1.1:53,8.8.8.8:53")),
 		ProbeSpeedtestURL:        getEnv("PROBE_SPEEDTEST_URL", "https://speed.cloudflare.com/__down?bytes=10000000"),
 		ProbeSpeedtestInterval:   getEnvDuration("PROBE_SPEEDTEST_INTERVAL", 10*time.Minute),
 		ProbeSpeedtestTimeout:    getEnvDuration("PROBE_SPEEDTEST_TIMEOUT", 15*time.Second),
@@ -184,6 +186,24 @@ func parseCommaList(s string) []string {
 		if trimmed != "" {
 			res = append(res, trimmed)
 		}
+	}
+	return res
+}
+
+func parseDNSServers(raw string) []string {
+	var res []string
+	for _, s := range strings.Split(raw, ",") {
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.Contains(trimmed, ":") {
+			trimmed = trimmed + ":53"
+		}
+		res = append(res, trimmed)
+	}
+	if len(res) == 0 {
+		return []string{"1.1.1.1:53", "8.8.8.8:53"}
 	}
 	return res
 }
