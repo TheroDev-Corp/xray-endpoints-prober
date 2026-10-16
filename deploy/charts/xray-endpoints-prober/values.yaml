@@ -16,7 +16,11 @@ serviceAccount:
   annotations: {}
   name: ""
 
-podAnnotations: {}
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
 podLabels: {}
 
 podSecurityContext:
@@ -46,6 +50,9 @@ config:
   probeSpeedtestUrl: "https://speed.cloudflare.com/__down?bytes=10000000"
   probeSpeedtestInterval: "10m"
   probeSpeedtestTimeout: "15s"
+
+  # DNS measurement settings (UDP/TCP query via endpoint proxy)
+  probeDnsServers: "1.1.1.1:53,8.8.8.8:53"
   
   probeConcurrency: 5
   listenAddr: ":8080"
@@ -60,9 +67,13 @@ service:
   type: ClusterIP
   port: 8080
   name: http-metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
 
 serviceMonitor:
-  enabled: true
+  enabled: false
   interval: 15s
   scrapeTimeout: 10s
   labels:

@@ -65,6 +65,8 @@ spec:
               value: {{ .Values.config.probeSpeedtestInterval | quote }}
             - name: PROBE_SPEEDTEST_TIMEOUT
               value: {{ .Values.config.probeSpeedtestTimeout | quote }}
+            - name: PROBE_DNS_SERVERS
+              value: {{ .Values.config.probeDnsServers | quote }}
             - name: PROBE_CONCURRENCY
               value: {{ .Values.config.probeConcurrency | quote }}
             - name: LISTEN_ADDR
