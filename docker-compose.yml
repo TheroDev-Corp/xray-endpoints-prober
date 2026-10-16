@@ -1,0 +1,19 @@
+services:
+  xray-prober:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xray-endpoints-prober:latest
+    container_name: xray-endpoints-prober
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+
+    volumes:
+      - xray-cache:/var/cache/xray
+      - prober-cache:/var/cache/xray-prober
+
+volumes:
+  xray-cache:
+  prober-cache:
