@@ -30,6 +30,7 @@ type Config struct {
 	ProbeDNSServers        []string
 
 	// Speedtest settings
+	ProbeSpeedtestEnabled  bool
 	ProbeSpeedtestURL      string
 	ProbeSpeedtestInterval time.Duration
 	ProbeSpeedtestTimeout  time.Duration
@@ -69,6 +70,7 @@ func Load() (*Config, error) {
 		ProbePingInterval:        getEnvDuration("PROBE_PING_INTERVAL", 30*time.Second),
 		ProbePingTimeout:         getEnvDuration("PROBE_PING_TIMEOUT", 5*time.Second),
 		ProbeDNSServers:          parseDNSServers(getEnv("PROBE_DNS_SERVERS", "1.1.1.1:53,8.8.8.8:53")),
+		ProbeSpeedtestEnabled:    getEnvBool("PROBE_SPEEDTEST_ENABLED", true),
 		ProbeSpeedtestURL:        getEnv("PROBE_SPEEDTEST_URL", "https://speed.cloudflare.com/__down?bytes=10000000"),
 		ProbeSpeedtestInterval:   getEnvDuration("PROBE_SPEEDTEST_INTERVAL", 10*time.Minute),
 		ProbeSpeedtestTimeout:    getEnvDuration("PROBE_SPEEDTEST_TIMEOUT", 15*time.Second),
@@ -173,6 +175,24 @@ func getEnvInt(key string, defaultVal int) int {
 		return defaultVal
 	}
 	return n
+}
+
+func getEnvBool(key string, defaultVal bool) bool {
+	valStr, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(valStr) == "" {
+		return defaultVal
+	}
+	trimmed := strings.ToLower(strings.TrimSpace(valStr))
+	if b, err := strconv.ParseBool(trimmed); err == nil {
+		return b
+	}
+	switch trimmed {
+	case "yes", "y", "enable", "enabled":
+		return true
+	case "no", "n", "disable", "disabled":
+		return false
+	}
+	return defaultVal
 }
 
 func parseCommaList(s string) []string {

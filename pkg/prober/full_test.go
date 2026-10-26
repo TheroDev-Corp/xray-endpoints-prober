@@ -128,6 +128,7 @@ func TestProber_LatencyAndSpeedtestLoops(t *testing.T) {
 		},
 		ProbePingInterval:      50 * time.Millisecond,
 		ProbePingTimeout:       1 * time.Second,
+		ProbeSpeedtestEnabled:  true,
 		ProbeSpeedtestURL:      targetURL,
 		ProbeSpeedtestInterval: 50 * time.Millisecond,
 		ProbeSpeedtestTimeout:  1 * time.Second,

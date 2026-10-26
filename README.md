@@ -91,6 +91,7 @@ All configuration is supplied via environment variables:
 | `PROBE_PING_INTERVAL` | `30s` | Interval between latency probe cycles |
 | `PROBE_PING_TIMEOUT` | `5s` | Timeout for each individual HTTP probe |
 | `PROBE_DNS_SERVERS` | `1.1.1.1:53,8.8.8.8:53` | Comma-separated recursive DNS resolvers used to measure tunnel DNS latency |
+| `PROBE_SPEEDTEST_ENABLED` | `true` | Enable or disable periodic download speed measurement (`true`/`false`) |
 | `PROBE_SPEEDTEST_URL` | `https://speed.cloudflare.com/__down?bytes=10000000` | Target URL used for download speed tests |
 | `PROBE_SPEEDTEST_INTERVAL` | `10m` | Interval between sequential throughput measurement sweeps |
 | `PROBE_SPEEDTEST_TIMEOUT` | `15s` | Timeout allocated per endpoint during speed testing |

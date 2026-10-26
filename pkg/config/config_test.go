@@ -31,6 +31,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ProbeTargets[0].Tag != "cloudflare" || cfg.ProbeTargets[1].Tag != "gstatic" || cfg.ProbeTargets[2].Tag != "google" {
 		t.Errorf("unexpected target tags: %+v", cfg.ProbeTargets)
 	}
+	if !cfg.ProbeSpeedtestEnabled {
+		t.Errorf("expected ProbeSpeedtestEnabled true by default, got false")
+	}
 }
 
 func TestLoadCustomEnv(t *testing.T) {
@@ -46,6 +49,7 @@ func TestLoadCustomEnv(t *testing.T) {
 	os.Setenv("PROBE_PING_INTERVAL", "15s")
 	os.Setenv("PROBE_PING_TIMEOUT", "2s")
 	os.Setenv("PROBE_SPEEDTEST_URL", "https://speed.cloudflare.com/__down?bytes=1000000")
+	os.Setenv("PROBE_SPEEDTEST_ENABLED", "false")
 	os.Setenv("PROBE_SPEEDTEST_INTERVAL", "1h")
 	os.Setenv("PROBE_SPEEDTEST_TIMEOUT", "20s")
 	os.Setenv("PROBE_CONCURRENCY", "5")
@@ -89,6 +93,41 @@ func TestLoadCustomEnv(t *testing.T) {
 	}
 	if cfg.InboundBasePort != 12000 {
 		t.Errorf("expected InboundBasePort 12000, got %d", cfg.InboundBasePort)
+	}
+	if cfg.ProbeSpeedtestEnabled {
+		t.Errorf("expected ProbeSpeedtestEnabled false, got true")
+	}
+}
+
+func TestProbeSpeedtestEnabledParsing(t *testing.T) {
+	testCases := []struct {
+		envVal   string
+		expected bool
+	}{
+		{"true", true},
+		{"TRUE", true},
+		{"1", true},
+		{"yes", true},
+		{"enable", true},
+		{"enabled", true},
+		{"false", false},
+		{"FALSE", false},
+		{"0", false},
+		{"no", false},
+		{"disable", false},
+		{"disabled", false},
+	}
+
+	for _, tc := range testCases {
+		os.Clearenv()
+		os.Setenv("PROBE_SPEEDTEST_ENABLED", tc.envVal)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected load error for %s: %v", tc.envVal, err)
+		}
+		if cfg.ProbeSpeedtestEnabled != tc.expected {
+			t.Errorf("for PROBE_SPEEDTEST_ENABLED=%q, expected %v, got %v", tc.envVal, tc.expected, cfg.ProbeSpeedtestEnabled)
+		}
 	}
 }
 

@@ -59,6 +59,8 @@ spec:
               value: {{ .Values.config.probePingInterval | quote }}
             - name: PROBE_PING_TIMEOUT
               value: {{ .Values.config.probePingTimeout | quote }}
+            - name: PROBE_SPEEDTEST_ENABLED
+              value: {{ .Values.config.probeSpeedtestEnabled | quote }}
             - name: PROBE_SPEEDTEST_URL
               value: {{ .Values.config.probeSpeedtestUrl | quote }}
             - name: PROBE_SPEEDTEST_INTERVAL

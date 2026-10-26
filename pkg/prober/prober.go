@@ -86,6 +86,10 @@ func (p *Prober) StartLatencyLoop(ctx context.Context) {
 
 // StartSpeedtestLoop starts the sequential speedtest probe ticker
 func (p *Prober) StartSpeedtestLoop(ctx context.Context) {
+	if !p.cfg.ProbeSpeedtestEnabled {
+		return
+	}
+
 	ticker := time.NewTicker(p.cfg.ProbeSpeedtestInterval)
 	defer ticker.Stop()
 
@@ -169,6 +173,10 @@ func (p *Prober) runLatencyProbes(ctx context.Context) {
 }
 
 func (p *Prober) runSpeedtestProbes(ctx context.Context) {
+	if !p.cfg.ProbeSpeedtestEnabled {
+		return
+	}
+
 	// Sequential execution
 	if !p.speedtestActiveMu.TryLock() {
 		log.Printf("Speedtest is already in progress, skipping tick")

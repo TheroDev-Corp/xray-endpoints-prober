@@ -47,6 +47,7 @@ config:
   probePingTimeout: "5s"
   
   # Speedtest settings
+  probeSpeedtestEnabled: true
   probeSpeedtestUrl: "https://speed.cloudflare.com/__down?bytes=10000000"
   probeSpeedtestInterval: "10m"
   probeSpeedtestTimeout: "15s"
