@@ -47,6 +47,52 @@ func TestProberUpdateEndpoints(t *testing.T) {
 	}
 }
 
+func TestProberSpeedtestDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Region:                 "test-region",
+		ProbeConcurrency:       2,
+		ProbePingInterval:      1 * time.Second,
+		ProbePingTimeout:       500 * time.Millisecond,
+		ProbeSpeedtestEnabled:  false,
+		ProbeSpeedtestInterval: 10 * time.Millisecond,
+		ProbeSpeedtestTimeout:  100 * time.Millisecond,
+	}
+	m := metrics.NewMetrics("test-region", "test-version")
+	p := NewProber(cfg, m)
+
+	eps := []subscription.Endpoint{
+		{
+			ID:        "ep-1",
+			Name:      "Server 1",
+			Protocol:  "vless",
+			Server:    "1.1.1.1",
+			Port:      443,
+			LocalPort: 10800,
+		},
+	}
+	p.UpdateEndpoints(eps)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Should return immediately because ProbeSpeedtestEnabled is false
+	done := make(chan struct{})
+	go func() {
+		p.StartSpeedtestLoop(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Succeeded immediately
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("StartSpeedtestLoop did not return immediately when speedtest is disabled")
+	}
+
+	// Also runSpeedtestProbes directly should be a no-op
+	p.runSpeedtestProbes(ctx)
+}
+
 // Simple dummy SOCKS5 proxy server for testing
 func runMockSocks5(t *testing.T, targetAddr string) (int, func(), error) {
 	l, err := net.Listen("tcp4", "127.0.0.1:0")

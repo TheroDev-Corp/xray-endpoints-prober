@@ -125,7 +125,11 @@ func main() {
 
 	// Start prober background loops
 	go probeRunner.StartLatencyLoop(appCtx)
-	go probeRunner.StartSpeedtestLoop(appCtx)
+	if cfg.ProbeSpeedtestEnabled {
+		go probeRunner.StartSpeedtestLoop(appCtx)
+	} else {
+		log.Println("[prober:speedtest] speedtest is disabled by configuration (PROBE_SPEEDTEST_ENABLED=false)")
+	}
 
 	// Wait for OS signals
 	sig := <-sigChan
