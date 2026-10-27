@@ -17,25 +17,39 @@ import (
 )
 
 type ProcessManager struct {
-	cacheDir string
-	version  string
-	binPath  string
-	cmd      *exec.Cmd
-	mu       sync.Mutex
-	stopCh   chan struct{}
-	waitDone chan struct{}
+	cacheDir       string
+	version        string
+	binPath        string
+	cmd            *exec.Cmd
+	mu             sync.Mutex
+	stopCh         chan struct{}
+	waitDone       chan struct{}
+	xrayMemLimitMB int
 }
 
-func NewProcessManager(cacheDir, version string) *ProcessManager {
+func NewProcessManager(cacheDir, version string, memLimitMB ...int) *ProcessManager {
+	limit := 50
+	if len(memLimitMB) > 0 && memLimitMB[0] > 0 {
+		limit = memLimitMB[0]
+	}
 	return &ProcessManager{
-		cacheDir: cacheDir,
-		version:  version,
-		binPath:  filepath.Join(cacheDir, fmt.Sprintf("xray-%s", version)),
+		cacheDir:       cacheDir,
+		version:        version,
+		binPath:        filepath.Join(cacheDir, fmt.Sprintf("xray-%s", version)),
+		xrayMemLimitMB: limit,
 	}
 }
 
 func (pm *ProcessManager) BinaryPath() string {
 	return pm.binPath
+}
+
+func (pm *ProcessManager) SetMemoryLimitMB(limitMB int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if limitMB > 0 {
+		pm.xrayMemLimitMB = limitMB
+	}
 }
 
 func (pm *ProcessManager) EnsureBinary(ctx context.Context) error {
@@ -184,7 +198,7 @@ func (pm *ProcessManager) Start(configPath string) error {
 		}
 	}
 	if !hasMemLimit {
-		cmd.Env = append(cmd.Env, "GOMEMLIMIT=150MiB")
+		cmd.Env = append(cmd.Env, fmt.Sprintf("GOMEMLIMIT=%dMiB", pm.xrayMemLimitMB))
 	}
 
 	if err := cmd.Start(); err != nil {

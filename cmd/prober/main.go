@@ -7,6 +7,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,13 +22,62 @@ import (
 	"github.com/TheroDev-Corp/xray-endpoints-prober/pkg/xraycore"
 )
 
+func detectCgroupMemoryLimit() int64 {
+	// Cgroup v2: /sys/fs/cgroup/memory.max
+	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
+		str := strings.TrimSpace(string(data))
+		if str != "" && str != "max" {
+			if limit, err := strconv.ParseInt(str, 10, 64); err == nil && limit > 0 {
+				return limit
+			}
+		}
+	}
+
+	// Cgroup v1: /sys/fs/cgroup/memory/memory.limit_in_bytes
+	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
+		str := strings.TrimSpace(string(data))
+		if limit, err := strconv.ParseInt(str, 10, 64); err == nil && limit > 0 && limit < (1<<50) {
+			return limit
+		}
+	}
+
+	return 0
+}
+
+func setupMemoryBudgets() int {
+	cgroupLimit := detectCgroupMemoryLimit()
+	var xrayMemLimitMB int
+
+	if memLimitEnv := os.Getenv("GOMEMLIMIT"); memLimitEnv != "" {
+		log.Printf("GOMEMLIMIT explicitly set: %s", memLimitEnv)
+		if cgroupLimit > 0 {
+			xrayMemLimitMB = int((cgroupLimit / (1024 * 1024)) / 4)
+		} else {
+			xrayMemLimitMB = 50
+		}
+	} else if cgroupLimit > 0 {
+		cgroupMB := cgroupLimit / (1024 * 1024)
+		// Allocate 60% of cgroup limit to Prober heap, 25% to child Xray process
+		proberLimit := int64(float64(cgroupLimit) * 0.60)
+		debug.SetMemoryLimit(proberLimit)
+		xrayMemLimitMB = int(float64(cgroupMB) * 0.25)
+		if xrayMemLimitMB < 20 {
+			xrayMemLimitMB = 20
+		}
+		log.Printf("Detected container cgroup memory limit: %d MiB (budgeted: Prober %d MiB, Xray %d MiB)",
+			cgroupMB, proberLimit/(1024*1024), xrayMemLimitMB)
+	} else {
+		xrayMemLimitMB = 50
+	}
+
+	return xrayMemLimitMB
+}
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.LUTC)
 	log.Println("Starting xray-endpoints-prober...")
 
-	if memLimit := os.Getenv("GOMEMLIMIT"); memLimit != "" {
-		log.Printf("Go runtime GOMEMLIMIT configured: %s", memLimit)
-	}
+	xrayMemLimitMB := setupMemoryBudgets()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -51,7 +103,7 @@ func main() {
 	}()
 
 	// Ensure Xray-core binary is available
-	pm := xraycore.NewProcessManager(cfg.XrayCacheDir, cfg.XrayVersion)
+	pm := xraycore.NewProcessManager(cfg.XrayCacheDir, cfg.XrayVersion, xrayMemLimitMB)
 	if err := pm.EnsureBinary(appCtx); err != nil {
 		log.Printf("Warning: failed to acquire Xray binary directly (%v). Checking local fallback...", err)
 		if path, pErr := xraycore.FindBinaryInPath("xray"); pErr == nil {

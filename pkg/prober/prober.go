@@ -284,12 +284,12 @@ func createSocksClient(localPort int, timeout time.Duration) *http.Client {
 		Proxy: http.ProxyURL(proxyURL),
 		DialContext: (&net.Dialer{
 			Timeout:   timeout,
-			KeepAlive: 30 * time.Second,
+			KeepAlive: 15 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          50,
-		MaxIdleConnsPerHost:   10,
-		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConns:          20,
+		MaxIdleConnsPerHost:   5,
+		IdleConnTimeout:       15 * time.Second,
 		TLSHandshakeTimeout:   timeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
@@ -375,8 +375,8 @@ func probeEndpointDetailedWithClient(ctx context.Context, client *http.Client, l
 	}
 	phases.TotalDurationSec = totalDur.Seconds()
 
-	// Drain response body up to 64KB so HTTP connection can be reused cleanly
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+	// Drain response body up to 16KB so HTTP connection can be reused cleanly
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 16*1024))
 
 	statusCode := resp.StatusCode
 	if statusCode < 200 || statusCode >= 400 {

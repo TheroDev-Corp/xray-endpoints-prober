@@ -41,8 +41,8 @@ config:
   subscriptionPollInterval: "10m"
   protocolsExclude: "hysteria2,shadowsocks"
   
-  # Go runtime memory limit to prevent GC thrashing and stay under container limits
-  goMemLimit: "384MiB"
+  # Go runtime memory limit (optional manual override; by default dynamically budgeted from cgroup limit)
+  goMemLimit: ""
   
   # Multi-target probe settings
   probeTargetUrls: "https://cp.cloudflare.com/generate_204,https://www.google.com/generate_204,https://www.gstatic.com/generate_204"
@@ -114,13 +114,13 @@ readinessProbe:
 persistence:
   cache:
     enabled: true
-    # Use emptyDir with Memory medium (tmpfs) to prevent node disk IOPS thrashing
+    # Use emptyDir by default (leave medium: "" unless generous container RAM is allocated)
     emptyDir:
-      medium: "Memory"
-      sizeLimit: 256Mi
+      medium: ""
+      sizeLimit: 1Gi
   tmpDir:
-    medium: "Memory"
-    sizeLimit: 128Mi
+    medium: ""
+    sizeLimit: 512Mi
 
 nodeSelector: {}
 tolerations: []
