@@ -23,6 +23,10 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.LUTC)
 	log.Println("Starting xray-endpoints-prober...")
 
+	if memLimit := os.Getenv("GOMEMLIMIT"); memLimit != "" {
+		log.Printf("Go runtime GOMEMLIMIT configured: %s", memLimit)
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Configuration error: %v", err)
@@ -62,6 +66,7 @@ func main() {
 
 	// Initialize prober
 	probeRunner := prober.NewProber(cfg, promMetrics)
+	defer probeRunner.Close()
 
 	// Config file destination
 	xrayConfigFile := filepath.Join(cfg.XrayCacheDir, "config.json")
@@ -94,7 +99,7 @@ func main() {
 		// Allow Xray to initialize listeners before probing
 		time.Sleep(500 * time.Millisecond)
 
-		// Update prober targets
+		// Update prober targets and recycle old endpoint clients
 		probeRunner.UpdateEndpoints(assignedEndpoints)
 		srv.SetReady(true)
 		log.Printf("Xray updated and prober reconfigured with %d endpoints", len(assignedEndpoints))
@@ -146,6 +151,7 @@ func main() {
 		log.Printf("HTTP shutdown error: %v", err)
 	}
 
+	probeRunner.Close()
 	_ = pm.Stop()
 	log.Println("xray-endpoints-prober shutdown complete")
 }

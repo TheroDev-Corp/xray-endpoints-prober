@@ -53,6 +53,10 @@ spec:
               value: {{ .Values.config.subscriptionPollInterval | quote }}
             - name: PROTOCOLS_EXCLUDE
               value: {{ .Values.config.protocolsExclude | quote }}
+            {{- if .Values.config.goMemLimit }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.config.goMemLimit | quote }}
+            {{- end }}
             - name: PROBE_TARGET_URLS
               value: {{ .Values.config.probeTargetUrls | quote }}
             - name: PROBE_PING_INTERVAL
@@ -100,11 +104,29 @@ spec:
               mountPath: /tmp
       volumes:
         - name: tmp-dir
-          emptyDir: {}
+          emptyDir:
+            {{- if and .Values.persistence .Values.persistence.tmpDir (hasKey .Values.persistence.tmpDir "medium") .Values.persistence.tmpDir.medium }}
+            medium: {{ .Values.persistence.tmpDir.medium | quote }}
+            {{- end }}
+            {{- if and .Values.persistence .Values.persistence.tmpDir (hasKey .Values.persistence.tmpDir "sizeLimit") .Values.persistence.tmpDir.sizeLimit }}
+            sizeLimit: {{ .Values.persistence.tmpDir.sizeLimit | quote }}
+            {{- end }}
         - name: cache-xray
-          emptyDir: {}
+          emptyDir:
+            {{- if and .Values.persistence .Values.persistence.cache (hasKey .Values.persistence.cache "emptyDir") .Values.persistence.cache.emptyDir.medium }}
+            medium: {{ .Values.persistence.cache.emptyDir.medium | quote }}
+            {{- end }}
+            {{- if and .Values.persistence .Values.persistence.cache (hasKey .Values.persistence.cache "emptyDir") .Values.persistence.cache.emptyDir.sizeLimit }}
+            sizeLimit: {{ .Values.persistence.cache.emptyDir.sizeLimit | quote }}
+            {{- end }}
         - name: cache-prober
-          emptyDir: {}
+          emptyDir:
+            {{- if and .Values.persistence .Values.persistence.cache (hasKey .Values.persistence.cache "emptyDir") .Values.persistence.cache.emptyDir.medium }}
+            medium: {{ .Values.persistence.cache.emptyDir.medium | quote }}
+            {{- end }}
+            {{- if and .Values.persistence .Values.persistence.cache (hasKey .Values.persistence.cache "emptyDir") .Values.persistence.cache.emptyDir.sizeLimit }}
+            sizeLimit: {{ .Values.persistence.cache.emptyDir.sizeLimit | quote }}
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

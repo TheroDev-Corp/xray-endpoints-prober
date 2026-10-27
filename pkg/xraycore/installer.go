@@ -23,6 +23,7 @@ type ProcessManager struct {
 	cmd      *exec.Cmd
 	mu       sync.Mutex
 	stopCh   chan struct{}
+	waitDone chan struct{}
 }
 
 func NewProcessManager(cacheDir, version string) *ProcessManager {
@@ -172,6 +173,19 @@ func (pm *ProcessManager) Start(configPath string) error {
 	cmd := exec.Command(pm.binPath, "run", "-config", configPath)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+
+	// Guard against memory leaks in child Xray process: set GOMEMLIMIT if not explicitly configured
+	var hasMemLimit bool
+	for _, env := range cmd.Env {
+		if strings.HasPrefix(env, "GOMEMLIMIT=") {
+			hasMemLimit = true
+			break
+		}
+	}
+	if !hasMemLimit {
+		cmd.Env = append(cmd.Env, "GOMEMLIMIT=150MiB")
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start xray process: %w", err)
@@ -179,8 +193,10 @@ func (pm *ProcessManager) Start(configPath string) error {
 
 	pm.cmd = cmd
 	pm.stopCh = make(chan struct{})
+	pm.waitDone = make(chan struct{})
 
-	go func(c *exec.Cmd, stopCh chan struct{}) {
+	go func(c *exec.Cmd, stopCh, waitDone chan struct{}) {
+		defer close(waitDone)
 		err := c.Wait()
 		select {
 		case <-stopCh:
@@ -188,7 +204,7 @@ func (pm *ProcessManager) Start(configPath string) error {
 		default:
 			log.Printf("xray process exited unexpectedly: %v", err)
 		}
-	}(cmd, pm.stopCh)
+	}(cmd, pm.stopCh, pm.waitDone)
 
 	return nil
 }
@@ -208,23 +224,16 @@ func (pm *ProcessManager) stopLocked() error {
 	// Send SIGTERM
 	_ = pm.cmd.Process.Signal(os.Interrupt)
 
-	done := make(chan error, 1)
-	go func() {
-		// Wait for process to exit
-		state, err := pm.cmd.Process.Wait()
-		if state != nil && !state.Exited() {
-			_ = pm.cmd.Process.Kill()
-		}
-		done <- err
-	}()
-
 	select {
+	case <-pm.waitDone:
+		// Process cleanly exited
 	case <-time.After(3 * time.Second):
 		_ = pm.cmd.Process.Kill()
-	case <-done:
+		<-pm.waitDone
 	}
 
 	pm.cmd = nil
+	pm.waitDone = nil
 	return nil
 }
 

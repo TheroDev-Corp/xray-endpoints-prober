@@ -41,6 +41,9 @@ config:
   subscriptionPollInterval: "10m"
   protocolsExclude: "hysteria2,shadowsocks"
   
+  # Go runtime memory limit to prevent GC thrashing and stay under container limits
+  goMemLimit: "384MiB"
+  
   # Multi-target probe settings
   probeTargetUrls: "https://cp.cloudflare.com/generate_204,https://www.google.com/generate_204,https://www.gstatic.com/generate_204"
   probePingInterval: "15s"
@@ -111,13 +114,13 @@ readinessProbe:
 persistence:
   cache:
     enabled: true
-    # Use emptyDir by default for high performance and ephemeral pod lifecycle
+    # Use emptyDir with Memory medium (tmpfs) to prevent node disk IOPS thrashing
     emptyDir:
-      medium: ""
-      sizeLimit: 1Gi
-    # Or use a PersistentVolumeClaim
-    # storageClass: "standard"
-    # size: 1Gi
+      medium: "Memory"
+      sizeLimit: 256Mi
+  tmpDir:
+    medium: "Memory"
+    sizeLimit: 128Mi
 
 nodeSelector: {}
 tolerations: []

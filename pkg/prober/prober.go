@@ -29,12 +29,62 @@ type Prober struct {
 	endpoints []subscription.Endpoint
 
 	speedtestActiveMu sync.Mutex
+
+	clientMu sync.Mutex
+	clients  map[int]*http.Client
 }
 
 func NewProber(cfg *config.Config, m *metrics.Metrics) *Prober {
 	return &Prober{
 		cfg:     cfg,
 		metrics: m,
+		clients: make(map[int]*http.Client),
+	}
+}
+
+// getClient returns a cached HTTP client for localPort, or creates and caches a new one
+func (p *Prober) getClient(localPort int, timeout time.Duration) *http.Client {
+	p.clientMu.Lock()
+	defer p.clientMu.Unlock()
+
+	if p.clients == nil {
+		p.clients = make(map[int]*http.Client)
+	}
+
+	if client, ok := p.clients[localPort]; ok {
+		return client
+	}
+
+	client := createSocksClient(localPort, timeout)
+	p.clients[localPort] = client
+	return client
+}
+
+// cleanupClients closes idle connections and removes clients for ports that are no longer active
+func (p *Prober) cleanupClients(activePorts map[int]bool) {
+	p.clientMu.Lock()
+	defer p.clientMu.Unlock()
+
+	for port, client := range p.clients {
+		if !activePorts[port] {
+			if transport, ok := client.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+			delete(p.clients, port)
+		}
+	}
+}
+
+// Close closes all active clients and their idle connections
+func (p *Prober) Close() {
+	p.clientMu.Lock()
+	defer p.clientMu.Unlock()
+
+	for port, client := range p.clients {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+		delete(p.clients, port)
 	}
 }
 
@@ -44,12 +94,17 @@ func (p *Prober) UpdateEndpoints(endpoints []subscription.Endpoint) {
 	p.endpoints = make([]subscription.Endpoint, len(endpoints))
 	copy(p.endpoints, endpoints)
 	activeIDs := make(map[string]bool)
+	activePorts := make(map[int]bool)
 	for _, ep := range endpoints {
 		activeIDs[ep.ID] = true
+		if ep.LocalPort > 0 {
+			activePorts[ep.LocalPort] = true
+		}
 		p.metrics.RegisterEndpoint(ep.ID, ep.Name, ep.Protocol, ep.Server, ep.Port)
 	}
 	p.mu.Unlock()
 
+	p.cleanupClients(activePorts)
 	p.metrics.PruneMissing(activeIDs)
 }
 
@@ -138,6 +193,8 @@ func (p *Prober) runLatencyProbes(ctx context.Context) {
 			continue
 		}
 
+		client := p.getClient(ep.LocalPort, p.cfg.ProbePingTimeout)
+
 		for _, tgt := range targets {
 			select {
 			case <-ctx.Done():
@@ -146,7 +203,7 @@ func (p *Prober) runLatencyProbes(ctx context.Context) {
 			}
 
 			wg.Add(1)
-			go func(endpoint subscription.Endpoint, target config.TargetConfig) {
+			go func(endpoint subscription.Endpoint, target config.TargetConfig, c *http.Client) {
 				defer func() {
 					<-sem
 					wg.Done()
@@ -155,7 +212,7 @@ func (p *Prober) runLatencyProbes(ctx context.Context) {
 				probeCtx, cancel := context.WithTimeout(ctx, p.cfg.ProbePingTimeout)
 				defer cancel()
 
-				totalDur, phases, statusCode, err := probeEndpointDetailed(probeCtx, endpoint.LocalPort, target.URL, p.cfg.ProbeDNSServers)
+				totalDur, phases, statusCode, err := probeEndpointDetailedWithClient(probeCtx, c, endpoint.LocalPort, target.URL, p.cfg.ProbeDNSServers)
 				if err != nil {
 					p.metrics.RecordTargetLatency(endpoint.ID, target.Tag, false, statusCode, 0, metrics.PhaseMetrics{}, err)
 					atomic.AddInt64(&failCount, 1)
@@ -163,7 +220,7 @@ func (p *Prober) runLatencyProbes(ctx context.Context) {
 					p.metrics.RecordTargetLatency(endpoint.ID, target.Tag, true, statusCode, totalDur, phases, nil)
 					atomic.AddInt64(&successCount, 1)
 				}
-			}(ep, tgt)
+			}(ep, tgt, client)
 		}
 	}
 
@@ -203,7 +260,8 @@ func (p *Prober) runSpeedtestProbes(ctx context.Context) {
 		}
 
 		probeCtx, cancel := context.WithTimeout(ctx, p.cfg.ProbeSpeedtestTimeout)
-		bytesRead, duration, err := probeEndpointSpeed(probeCtx, ep.LocalPort, p.cfg.ProbeSpeedtestURL)
+		client := p.getClient(ep.LocalPort, p.cfg.ProbeSpeedtestTimeout)
+		bytesRead, duration, err := probeEndpointSpeedWithClient(probeCtx, client, ep.LocalPort, p.cfg.ProbeSpeedtestURL)
 		cancel()
 
 		p.metrics.RecordSpeed(ep.ID, bytesRead, duration, err)
@@ -229,8 +287,9 @@ func createSocksClient(localPort int, timeout time.Duration) *http.Client {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          50,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       30 * time.Second,
 		TLSHandshakeTimeout:   timeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
@@ -249,7 +308,10 @@ func probeEndpointDetailed(ctx context.Context, localPort int, targetURL string,
 			transport.CloseIdleConnections()
 		}
 	}()
+	return probeEndpointDetailedWithClient(ctx, client, localPort, targetURL, dnsServers)
+}
 
+func probeEndpointDetailedWithClient(ctx context.Context, client *http.Client, localPort int, targetURL string, dnsServers []string) (time.Duration, metrics.PhaseMetrics, int, error) {
 	var (
 		dnsStart, dnsDone   time.Time
 		connStart, connDone time.Time
@@ -313,8 +375,8 @@ func probeEndpointDetailed(ctx context.Context, localPort int, targetURL string,
 	}
 	phases.TotalDurationSec = totalDur.Seconds()
 
-	// Drain a small portion of body
-	_, _ = io.CopyN(io.Discard, resp.Body, 1024)
+	// Drain response body up to 64KB so HTTP connection can be reused cleanly
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 
 	statusCode := resp.StatusCode
 	if statusCode < 200 || statusCode >= 400 {
@@ -323,7 +385,7 @@ func probeEndpointDetailed(ctx context.Context, localPort int, targetURL string,
 
 	if phases.DNSDurationSec == 0 {
 		if parsedU, err := url.Parse(targetURL); err == nil && parsedU.Hostname() != "" {
-			if dnsDur, err := measureDNSResolution(localPort, parsedU.Hostname(), dnsServers, 2*time.Second); err == nil && dnsDur > 0 {
+			if dnsDur, err := measureDNSResolution(ctx, localPort, parsedU.Hostname(), dnsServers, 2*time.Second); err == nil && dnsDur > 0 {
 				phases.DNSDurationSec = dnsDur.Seconds()
 			}
 		}
@@ -338,7 +400,10 @@ func probeEndpointSpeed(ctx context.Context, localPort int, targetURL string) (i
 			transport.CloseIdleConnections()
 		}
 	}()
+	return probeEndpointSpeedWithClient(ctx, client, localPort, targetURL)
+}
 
+func probeEndpointSpeedWithClient(ctx context.Context, client *http.Client, localPort int, targetURL string) (int64, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return 0, 0, err
@@ -367,7 +432,7 @@ func probeEndpointSpeed(ctx context.Context, localPort int, targetURL string) (i
 }
 
 // measureDNSResolution measures real DNS lookup latency via SOCKS5 proxy using DNS-over-TCP to configured DNS servers
-func measureDNSResolution(proxyPort int, host string, dnsServers []string, timeout time.Duration) (time.Duration, error) {
+func measureDNSResolution(ctx context.Context, proxyPort int, host string, dnsServers []string, timeout time.Duration) (time.Duration, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		return 0, nil
 	}
@@ -376,52 +441,75 @@ func measureDNSResolution(proxyPort int, host string, dnsServers []string, timeo
 	}
 	var lastErr error
 	for _, dnsServer := range dnsServers {
-		start := time.Now()
-		conn, err := socks5Dial(fmt.Sprintf("127.0.0.1:%d", proxyPort), dnsServer, timeout)
-		if err != nil {
-			lastErr = err
-			continue
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
 		}
 
-		query := makeDNSQuery(host)
-		prefix := make([]byte, 2)
-		binary.BigEndian.PutUint16(prefix, uint16(len(query)))
-
-		_ = conn.SetDeadline(time.Now().Add(timeout))
-		if _, err := conn.Write(prefix); err != nil {
-			conn.Close()
-			lastErr = err
-			continue
+		dnsCtx, cancel := context.WithTimeout(ctx, timeout)
+		dur, err := queryDNSOverSocks(dnsCtx, proxyPort, dnsServer, host, timeout)
+		cancel()
+		if err == nil {
+			return dur, nil
 		}
-		if _, err := conn.Write(query); err != nil {
-			conn.Close()
-			lastErr = err
-			continue
-		}
-
-		if _, err := io.ReadFull(conn, prefix); err != nil {
-			conn.Close()
-			lastErr = err
-			continue
-		}
-		respLen := binary.BigEndian.Uint16(prefix)
-		respBuf := make([]byte, respLen)
-		if _, err := io.ReadFull(conn, respBuf); err != nil {
-			conn.Close()
-			lastErr = err
-			continue
-		}
-		conn.Close()
-		return time.Since(start), nil
+		lastErr = err
 	}
 	return 0, lastErr
 }
 
-func socks5Dial(proxyAddr, dstAddr string, timeout time.Duration) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", proxyAddr, timeout)
+func queryDNSOverSocks(ctx context.Context, proxyPort int, dnsServer, host string, timeout time.Duration) (time.Duration, error) {
+	start := time.Now()
+	conn, err := socks5Dial(ctx, fmt.Sprintf("127.0.0.1:%d", proxyPort), dnsServer, timeout)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	query := makeDNSQuery(host)
+	prefix := make([]byte, 2)
+	binary.BigEndian.PutUint16(prefix, uint16(len(query)))
+
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+
+	if _, err := conn.Write(prefix); err != nil {
+		return 0, err
+	}
+	if _, err := conn.Write(query); err != nil {
+		return 0, err
+	}
+
+	if _, err := io.ReadFull(conn, prefix); err != nil {
+		return 0, err
+	}
+	respLen := binary.BigEndian.Uint16(prefix)
+	if respLen > 4096 {
+		return 0, fmt.Errorf("dns response too large: %d", respLen)
+	}
+	respBuf := make([]byte, respLen)
+	if _, err := io.ReadFull(conn, respBuf); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
+}
+
+func socks5Dial(ctx context.Context, proxyAddr, dstAddr string, timeout time.Duration) (net.Conn, error) {
+	d := &net.Dialer{Timeout: timeout}
+	conn, err := d.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, err
 	}
+
+	// CRITICAL: Immediately set deadline so handshake and connect never hang indefinitely!
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
 
 	// 1. Handshake
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
@@ -431,7 +519,10 @@ func socks5Dial(proxyAddr, dstAddr string, timeout time.Duration) (net.Conn, err
 	buf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, buf); err != nil || buf[0] != 0x05 || buf[1] != 0x00 {
 		conn.Close()
-		return nil, fmt.Errorf("socks5 handshake failed")
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("socks5 handshake failed: unsupported auth")
 	}
 
 	// 2. Connect
@@ -448,6 +539,9 @@ func socks5Dial(proxyAddr, dstAddr string, timeout time.Duration) (net.Conn, err
 	if ip4 := ip.To4(); ip4 != nil {
 		req = append(req, 0x01)
 		req = append(req, ip4...)
+	} else if ip6 := ip.To16(); ip6 != nil && !strings.Contains(host, ".") {
+		req = append(req, 0x04)
+		req = append(req, ip6...)
 	} else {
 		req = append(req, 0x03, byte(len(host)))
 		req = append(req, []byte(host)...)
@@ -460,19 +554,38 @@ func socks5Dial(proxyAddr, dstAddr string, timeout time.Duration) (net.Conn, err
 	}
 
 	resp := make([]byte, 4)
-	if _, err := io.ReadFull(conn, resp); err != nil || resp[1] != 0x00 {
+	if _, err := io.ReadFull(conn, resp); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("socks5 connect failed")
+		return nil, err
+	}
+	if resp[1] != 0x00 {
+		conn.Close()
+		return nil, fmt.Errorf("socks5 connect failed with status 0x%02x", resp[1])
 	}
 	switch resp[3] {
 	case 0x01:
-		io.CopyN(io.Discard, conn, 4+2)
+		if _, err := io.CopyN(io.Discard, conn, 4+2); err != nil {
+			conn.Close()
+			return nil, err
+		}
 	case 0x03:
 		var l [1]byte
-		conn.Read(l[:])
-		io.CopyN(io.Discard, conn, int64(l[0])+2)
+		if _, err := io.ReadFull(conn, l[:]); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		if _, err := io.CopyN(io.Discard, conn, int64(l[0])+2); err != nil {
+			conn.Close()
+			return nil, err
+		}
 	case 0x04:
-		io.CopyN(io.Discard, conn, 16+2)
+		if _, err := io.CopyN(io.Discard, conn, 16+2); err != nil {
+			conn.Close()
+			return nil, err
+		}
+	default:
+		conn.Close()
+		return nil, fmt.Errorf("socks5 connect returned unsupported address type: 0x%02x", resp[3])
 	}
 	return conn, nil
 }
