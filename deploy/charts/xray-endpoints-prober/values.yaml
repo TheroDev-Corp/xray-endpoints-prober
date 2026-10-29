@@ -36,7 +36,7 @@ securityContext:
 # Prober Configuration
 config:
   region: "default"
-  xrayVersion: "v26.3.27"
+  xrayVersion: "v26.10.21"
   subscriptionUrl: ""
   subscriptionPollInterval: "10m"
   protocolsExclude: "hysteria2,shadowsocks"

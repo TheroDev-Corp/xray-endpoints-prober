@@ -116,3 +116,25 @@ func TestSocks5DialTimeoutOnHangingServer(t *testing.T) {
 		t.Errorf("socks5Dial took too long to time out: %v", elapsed)
 	}
 }
+
+func TestProberResetClients(t *testing.T) {
+	cfg := &config.Config{
+		Region: "test-region",
+	}
+	m := metrics.NewMetrics("test-region", "test-version")
+	p := NewProber(cfg, m)
+
+	c1 := p.getClient(10800, 5*time.Second)
+	if c1 == nil {
+		t.Fatal("expected non-nil client")
+	}
+
+	// ResetClients should close idle connections without error and not panic
+	p.ResetClients()
+
+	// Client reference should still remain valid and usable
+	c2 := p.getClient(10800, 5*time.Second)
+	if c1 != c2 {
+		t.Errorf("expected client to remain in pool after ResetClients")
+	}
+}

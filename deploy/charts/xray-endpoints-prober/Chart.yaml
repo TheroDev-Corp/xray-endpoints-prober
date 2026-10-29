@@ -2,8 +2,8 @@ apiVersion: v2
 name: xray-endpoints-prober
 description: Cloud-native Prometheus prober for Xray endpoints across multiple regions
 type: application
-version: 0.2.2
-appVersion: "v26.3.27"
+version: 0.3.0
+appVersion: "v26.10.21"
 keywords:
   - xray
   - vless

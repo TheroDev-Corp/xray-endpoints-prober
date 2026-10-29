@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +26,14 @@ type ProcessManager struct {
 	stopCh         chan struct{}
 	waitDone       chan struct{}
 	xrayMemLimitMB int
+
+	// Supervision & recovery state
+	configPath string
+	isRunning  atomic.Bool
+	isStopping bool
+	onRestart  func()
+	onFatal    func(error)
+	crashTimes []time.Time
 }
 
 func NewProcessManager(cacheDir, version string, memLimitMB ...int) *ProcessManager {
@@ -42,6 +51,22 @@ func NewProcessManager(cacheDir, version string, memLimitMB ...int) *ProcessMana
 
 func (pm *ProcessManager) BinaryPath() string {
 	return pm.binPath
+}
+
+func (pm *ProcessManager) IsRunning() bool {
+	return pm.isRunning.Load()
+}
+
+func (pm *ProcessManager) SetOnRestart(fn func()) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.onRestart = fn
+}
+
+func (pm *ProcessManager) SetOnFatal(fn func(error)) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.onFatal = fn
 }
 
 func (pm *ProcessManager) SetMemoryLimitMB(limitMB int) {
@@ -180,10 +205,14 @@ func (pm *ProcessManager) Start(configPath string) error {
 	defer pm.mu.Unlock()
 
 	if pm.cmd != nil && pm.cmd.Process != nil {
-		// Stop existing
 		_ = pm.stopLocked()
 	}
 
+	pm.crashTimes = nil
+	return pm.startLocked(configPath)
+}
+
+func (pm *ProcessManager) startLocked(configPath string) error {
 	cmd := exec.Command(pm.binPath, "run", "-config", configPath)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = os.Stderr
@@ -202,23 +231,91 @@ func (pm *ProcessManager) Start(configPath string) error {
 	}
 
 	if err := cmd.Start(); err != nil {
+		pm.isRunning.Store(false)
 		return fmt.Errorf("failed to start xray process: %w", err)
 	}
 
 	pm.cmd = cmd
+	pm.configPath = configPath
+	pm.isStopping = false
+	pm.isRunning.Store(true)
 	pm.stopCh = make(chan struct{})
 	pm.waitDone = make(chan struct{})
 
-	go func(c *exec.Cmd, stopCh, waitDone chan struct{}) {
-		defer close(waitDone)
+	stopCh := pm.stopCh
+	waitDone := pm.waitDone
+
+	go func(c *exec.Cmd, sCh, wDone chan struct{}, cfg string) {
 		err := c.Wait()
+		close(wDone)
+
 		select {
-		case <-stopCh:
+		case <-sCh:
 			// intentional stop
+			return
 		default:
-			log.Printf("xray process exited unexpectedly: %v", err)
+			// unexpected exit!
 		}
-	}(cmd, pm.stopCh, pm.waitDone)
+
+		pm.mu.Lock()
+		if pm.isStopping {
+			pm.mu.Unlock()
+			return
+		}
+
+		pm.cmd = nil
+		pm.isRunning.Store(false)
+
+		log.Printf("[xraycore] ERROR: xray process exited unexpectedly: %v", err)
+
+		now := time.Now()
+		pm.crashTimes = append(pm.crashTimes, now)
+
+		// Prune crashes older than 60 seconds
+		var recent []time.Time
+		cutoff := now.Add(-60 * time.Second)
+		for _, t := range pm.crashTimes {
+			if t.After(cutoff) {
+				recent = append(recent, t)
+			}
+		}
+		pm.crashTimes = recent
+
+		if len(recent) >= 5 {
+			log.Printf("[xraycore] FATAL: xray process crash loop detected (%d crashes in 60s), aborting auto-restart", len(recent))
+			fatalErr := fmt.Errorf("xray process crash loop detected: %d crashes in 60s (last err: %w)", len(recent), err)
+			fatalCb := pm.onFatal
+			pm.mu.Unlock()
+			if fatalCb != nil {
+				fatalCb(fatalErr)
+			}
+			return
+		}
+
+		restartCb := pm.onRestart
+		pm.mu.Unlock()
+
+		// Brief backoff before auto-restart
+		time.Sleep(1 * time.Second)
+
+		pm.mu.Lock()
+		if pm.isStopping || pm.configPath == "" {
+			pm.mu.Unlock()
+			return
+		}
+		log.Printf("[xraycore] Initiating auto-recovery of Xray process with config %s...", cfg)
+		restartErr := pm.startLocked(cfg)
+		pm.mu.Unlock()
+
+		if restartErr != nil {
+			log.Printf("[xraycore] Failed to auto-recover xray process: %v", restartErr)
+		} else {
+			log.Printf("[xraycore] Xray process successfully recovered and restarted")
+			if restartCb != nil {
+				restartCb()
+			}
+		}
+	}(cmd, stopCh, waitDone, configPath)
 
 	return nil
 }
@@ -230,13 +327,19 @@ func (pm *ProcessManager) Stop() error {
 }
 
 func (pm *ProcessManager) stopLocked() error {
+	pm.isStopping = true
+	pm.isRunning.Store(false)
 	if pm.cmd == nil || pm.cmd.Process == nil {
 		return nil
 	}
 	close(pm.stopCh)
 
-	// Send SIGTERM
-	_ = pm.cmd.Process.Signal(os.Interrupt)
+	// Send SIGTERM/Interrupt on Unix, Kill on Windows
+	if runtime.GOOS == "windows" {
+		_ = pm.cmd.Process.Kill()
+	} else {
+		_ = pm.cmd.Process.Signal(os.Interrupt)
+	}
 
 	select {
 	case <-pm.waitDone:
@@ -259,3 +362,4 @@ func (pm *ProcessManager) Restart(configPath string) error {
 func FindBinaryInPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
+

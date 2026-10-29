@@ -60,7 +60,7 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		Region:                   getEnv("REGION", "default"),
-		XrayVersion:              getEnv("XRAY_VERSION", "v24.11.30"),
+		XrayVersion:              getEnv("XRAY_VERSION", "v26.10.21"),
 		XrayCacheDir:             getEnv("XRAY_CACHE_DIR", "/tmp/xray-cache"),
 		SubscriptionURL:          getEnv("SUBSCRIPTION_URL", ""),
 		SubscriptionPollInterval: getEnvDuration("SUBSCRIPTION_POLL_INTERVAL", 10*time.Minute),

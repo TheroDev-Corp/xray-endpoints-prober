@@ -3,9 +3,12 @@ package xraycore
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func createFakeXrayZip() ([]byte, error) {
@@ -29,9 +32,10 @@ func createFakeXrayZip() ([]byte, error) {
 }
 
 func TestProcessManager_BinaryPath(t *testing.T) {
-	pm := NewProcessManager("/tmp/cache", "v26.0.0")
-	if pm.BinaryPath() != "/tmp/cache/xray-v26.0.0" {
-		t.Errorf("unexpected binary path: %s", pm.BinaryPath())
+	pm := NewProcessManager(filepath.Join("tmp", "cache"), "v26.0.0")
+	expected := filepath.Join("tmp", "cache", "xray-v26.0.0")
+	if pm.BinaryPath() != expected {
+		t.Errorf("unexpected binary path: got %s, expected %s", pm.BinaryPath(), expected)
 	}
 }
 
@@ -42,12 +46,11 @@ func TestProcessManager_Restart(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	fakeBin := filepath.Join(tmpDir, "xray-v26.0.0")
-	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\nsleep 10\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
+	ver := testVersion("v26.0.0")
+	dest := filepath.Join(tmpDir, fmt.Sprintf("xray-%s", ver))
+	copyTestBinary(t, dest)
 
-	pm := NewProcessManager(tmpDir, "v26.0.0")
+	pm := NewProcessManager(tmpDir, ver)
 	if err := pm.Start("/dev/null"); err != nil {
 		t.Fatalf("first start failed: %v", err)
 	}
@@ -64,6 +67,61 @@ func TestProcessManager_Restart(t *testing.T) {
 	}
 
 	_ = pm.Stop()
+}
+
+func TestProcessManager_AutoRecovery(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "xray-autorecovery-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ver := testVersion("v26.0.0")
+	dest := filepath.Join(tmpDir, fmt.Sprintf("xray-%s", ver))
+	copyTestBinary(t, dest)
+
+	var restartedCount int32
+	pm := NewProcessManager(tmpDir, ver)
+	pm.SetOnRestart(func() {
+		atomic.AddInt32(&restartedCount, 1)
+	})
+
+	if err := pm.Start("/dev/null"); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	if !pm.IsRunning() {
+		t.Fatalf("expected running process")
+	}
+
+	firstPID := pm.cmd.Process.Pid
+
+	// Simulate sudden crash by killing process without Stop()
+	_ = pm.cmd.Process.Kill()
+
+	// Wait for supervisor to auto-restart (backoff is ~1s)
+	deadline := time.Now().Add(4 * time.Second)
+	recovered := false
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		if pm.IsRunning() && pm.cmd != nil && pm.cmd.Process != nil && pm.cmd.Process.Pid != firstPID {
+			recovered = true
+			break
+		}
+	}
+
+	if !recovered {
+		t.Fatalf("process was not auto-recovered within deadline")
+	}
+
+	if atomic.LoadInt32(&restartedCount) < 1 {
+		t.Errorf("expected onRestart callback to be invoked at least once, got %d", atomic.LoadInt32(&restartedCount))
+	}
+
+	_ = pm.Stop()
+	if pm.IsRunning() {
+		t.Errorf("expected process to be stopped")
+	}
 }
 
 func TestProcessManager_ExtractZipLogic(t *testing.T) {

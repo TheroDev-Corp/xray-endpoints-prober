@@ -16,11 +16,15 @@ type Server struct {
 	metrics    *metrics.Metrics
 	isReady    atomic.Bool
 	isLive     atomic.Bool
+	aliveCheck func() bool
 }
 
-func NewServer(listenAddr string, m *metrics.Metrics) *Server {
+func NewServer(listenAddr string, m *metrics.Metrics, aliveCheck ...func() bool) *Server {
 	s := &Server{
 		metrics: m,
+	}
+	if len(aliveCheck) > 0 && aliveCheck[0] != nil {
+		s.aliveCheck = aliveCheck[0]
 	}
 
 	mux := http.NewServeMux()
@@ -39,6 +43,10 @@ func NewServer(listenAddr string, m *metrics.Metrics) *Server {
 	s.isReady.Store(false)
 
 	return s
+}
+
+func (s *Server) SetAliveCheck(check func() bool) {
+	s.aliveCheck = check
 }
 
 func (s *Server) SetReady(ready bool) {
@@ -68,7 +76,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	if s.isLive.Load() {
+	if s.isLive.Load() && (s.aliveCheck == nil || s.aliveCheck()) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK\n"))
 	} else {
@@ -78,7 +86,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	if s.isReady.Load() {
+	if s.isReady.Load() && (s.aliveCheck == nil || s.aliveCheck()) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Ready\n"))
 	} else {

@@ -40,6 +40,34 @@ func TestServerHandlers(t *testing.T) {
 		t.Errorf("expected 200 for /readyz when ready, got %d", rec.Code)
 	}
 
+	// Test aliveCheck failing
+	isAlive := true
+	srv.SetAliveCheck(func() bool { return isAlive })
+
+	isAlive = false
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for /healthz when aliveCheck is false, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for /readyz when aliveCheck is false, got %d", rec.Code)
+	}
+
+	// Restore alive
+	isAlive = true
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 for /readyz when alive restored, got %d", rec.Code)
+	}
+
 	// Test metrics
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)

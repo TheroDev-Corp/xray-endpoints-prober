@@ -16,8 +16,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Region != "default" {
 		t.Errorf("expected Region default, got %s", cfg.Region)
 	}
-	if cfg.XrayVersion != "v24.11.30" {
-		t.Errorf("expected XrayVersion v24.11.30, got %s", cfg.XrayVersion)
+	if cfg.XrayVersion != "v26.10.21" {
+		t.Errorf("expected XrayVersion v26.10.21, got %s", cfg.XrayVersion)
 	}
 	if cfg.ProbeConcurrency != 10 {
 		t.Errorf("expected Concurrency 10, got %d", cfg.ProbeConcurrency)

@@ -94,14 +94,6 @@ func main() {
 	// Initialize metrics
 	promMetrics := metrics.NewMetrics(cfg.Region, cfg.XrayVersion)
 
-	// Initialize HTTP server
-	srv := server.NewServer(cfg.ListenAddr, promMetrics)
-	go func() {
-		if err := srv.Start(); err != nil {
-			log.Printf("HTTP server stopped: %v", err)
-		}
-	}()
-
 	// Ensure Xray-core binary is available
 	pm := xraycore.NewProcessManager(cfg.XrayCacheDir, cfg.XrayVersion, xrayMemLimitMB)
 	if err := pm.EnsureBinary(appCtx); err != nil {
@@ -116,9 +108,29 @@ func main() {
 		_ = pm.Stop()
 	}()
 
+	// Initialize HTTP server
+	srv := server.NewServer(cfg.ListenAddr, promMetrics, pm.IsRunning)
+	go func() {
+		if err := srv.Start(); err != nil {
+			log.Printf("HTTP server stopped: %v", err)
+		}
+	}()
+
 	// Initialize prober
 	probeRunner := prober.NewProber(cfg, promMetrics)
 	defer probeRunner.Close()
+
+	// Register auto-restart & fatal handlers on Xray ProcessManager
+	pm.SetOnRestart(func() {
+		log.Println("[main] Xray process supervisor successfully recovered Xray, resetting HTTP connection pool")
+		probeRunner.ResetClients()
+		srv.SetReady(true)
+	})
+	pm.SetOnFatal(func(err error) {
+		log.Printf("[main] Fatal Xray process supervisor error: %v. Marking service unready and unhealthy.", err)
+		srv.SetLive(false)
+		srv.SetReady(false)
+	})
 
 	// Config file destination
 	xrayConfigFile := filepath.Join(cfg.XrayCacheDir, "config.json")
@@ -158,7 +170,7 @@ func main() {
 		return nil
 	}
 
-	subManager = subscription.NewManager(cfg, onUpdate)
+	subManager = subscription.NewManager(cfg, onUpdate, pm.IsRunning)
 	if err := subManager.Start(appCtx); err != nil {
 		log.Printf("Subscription manager start error: %v", err)
 	}

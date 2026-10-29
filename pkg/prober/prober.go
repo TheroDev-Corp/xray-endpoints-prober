@@ -75,6 +75,18 @@ func (p *Prober) cleanupClients(activePorts map[int]bool) {
 	}
 }
 
+// ResetClients closes idle connections on all cached HTTP transports
+func (p *Prober) ResetClients() {
+	p.clientMu.Lock()
+	defer p.clientMu.Unlock()
+
+	for _, client := range p.clients {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+}
+
 // Close closes all active clients and their idle connections
 func (p *Prober) Close() {
 	p.clientMu.Lock()

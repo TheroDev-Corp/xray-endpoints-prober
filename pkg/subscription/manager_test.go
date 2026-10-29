@@ -86,6 +86,16 @@ func TestSubscriptionManager_PollAndCallback(t *testing.T) {
 		t.Errorf("expected update count to remain 1 for unchanged content, got %d", atomic.LoadInt32(&updateCount))
 	}
 
+	// Third poll: same hash, but aliveCheck returns false (process dead) -> should re-trigger onUpdate!
+	isProcessAlive := false
+	mgr.SetAliveCheck(func() bool { return isProcessAlive })
+	if err := mgr.Poll(ctx); err != nil {
+		t.Fatalf("third mgr.Poll() failed: %v", err)
+	}
+	if atomic.LoadInt32(&updateCount) != 2 {
+		t.Errorf("expected update count to increase to 2 when process is dead, got %d", atomic.LoadInt32(&updateCount))
+	}
+
 	if mgr.GetPollErrors() != 0 {
 		t.Errorf("expected 0 poll errors, got %d", mgr.GetPollErrors())
 	}

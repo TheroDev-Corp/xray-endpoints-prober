@@ -25,16 +25,25 @@ type Manager struct {
 	lastPoll   time.Time
 	pollErrors int64
 	onUpdate   UpdateCallback
+	aliveCheck func() bool
 }
 
-func NewManager(cfg *config.Config, onUpdate UpdateCallback) *Manager {
-	return &Manager{
+func NewManager(cfg *config.Config, onUpdate UpdateCallback, aliveCheck ...func() bool) *Manager {
+	m := &Manager{
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 		onUpdate: onUpdate,
 	}
+	if len(aliveCheck) > 0 && aliveCheck[0] != nil {
+		m.aliveCheck = aliveCheck[0]
+	}
+	return m
+}
+
+func (m *Manager) SetAliveCheck(check func() bool) {
+	m.aliveCheck = check
 }
 
 func (m *Manager) GetEndpoints() []Endpoint {
@@ -129,6 +138,7 @@ func (m *Manager) Poll(ctx context.Context) error {
 	m.mu.Lock()
 	m.lastPoll = time.Now()
 	changed := (hash != m.lastHash)
+	processDead := (m.aliveCheck != nil && !m.aliveCheck())
 	if changed {
 		m.lastHash = hash
 		m.endpoints = endpoints
@@ -144,8 +154,12 @@ func (m *Manager) Poll(ctx context.Context) error {
 		_ = os.WriteFile(m.cfg.SubscriptionCacheFile, data, 0644)
 	}
 
-	if changed && m.onUpdate != nil {
-		log.Printf("[subscription] detected subscription change (%d endpoints), updating Xray config and prober...", len(endpoints))
+	if (changed || processDead) && m.onUpdate != nil {
+		if processDead && !changed {
+			log.Printf("[subscription] Xray process is down, re-triggering onUpdate with %d endpoints...", len(endpoints))
+		} else {
+			log.Printf("[subscription] detected subscription change (%d endpoints), updating Xray config and prober...", len(endpoints))
+		}
 		if err := m.onUpdate(endpoints); err != nil {
 			log.Printf("[subscription] onUpdate callback error: %v", err)
 		}
